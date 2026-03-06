@@ -1,102 +1,101 @@
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
-const fs = require('fs');
-const path = require('path');
+const net = require('net');
 
 const config = require('./config.json');
 
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
 });
 
 let logOffset = 0;
 let isConnected = false;
+let telnetConnection = null;
+let telnetBuffer = '';
 let logCheckInterval = null;
-const offsetFile = path.join(__dirname, '.log-offset');
 
-// Load offset
-function loadOffset() {
+// Connect to Telnet
+function connectTelnet() {
   try {
-    if (fs.existsSync(offsetFile)) {
-      logOffset = parseInt(fs.readFileSync(offsetFile, 'utf8')) || 0;
-      console.log(`[INIT] Loaded offset: ${logOffset}`);
-    }
-  } catch (err) {
-    logOffset = 0;
-  }
-}
+    telnetConnection = net.createConnection(
+      config.soulmask.telnetPort,
+      config.soulmask.serverIP
+    );
 
-// Save offset
-function saveOffset() {
-  try {
-    fs.writeFileSync(offsetFile, logOffset.toString());
-  } catch (err) {
-    console.error('[ERROR] Failed to save offset:', err.message);
-  }
-}
+    telnetConnection.on('connect', () => {
+      console.log('[TELNET] Connected');
+    });
 
-// Read logs from file
-function fetchLogs() {
-  try {
-    const logPath = config.logging.logFile;
-    
-    if (!fs.existsSync(logPath)) {
-      console.log(`[WARN] Log file not found: ${logPath}`);
-      return '';
-    }
+    telnetConnection.on('data', (data) => {
+      telnetBuffer += data.toString();
+      processLogs();
+    });
 
-    return fs.readFileSync(logPath, 'utf8');
+    telnetConnection.on('error', (error) => {
+      console.error('[TELNET] Error:', error.message);
+    });
+
+    telnetConnection.on('close', () => {
+      console.log('[TELNET] Disconnected');
+      setTimeout(connectTelnet, 5000);
+    });
   } catch (error) {
-    console.error('[ERROR] Failed to fetch logs:', error.message);
-    return '';
+    console.error('[ERROR] Telnet connect failed:', error.message);
+    setTimeout(connectTelnet, 5000);
   }
 }
 
-// Check for new logs
-async function checkLogs() {
+// Process incoming logs
+function processLogs() {
+  const lines = telnetBuffer.split('\n');
+  telnetBuffer = lines[lines.length - 1]; // Keep incomplete line
+
+  for (let i = 0; i < lines.length - 1; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    sendLogToDiscord(line);
+  }
+}
+
+// Send log to Discord
+async function sendLogToDiscord(line) {
+  if (!isConnected) return;
+
   try {
-    const fullLog = fetchLogs();
-    const lines = fullLog.split('\n').filter(line => line.trim());
-
-    // Get new lines since last offset
-    const newLines = lines.slice(logOffset);
-
-    if (newLines.length > 0) {
-      console.log(`[LOG] Found ${newLines.length} new line(s)`);
-
-      for (const line of newLines) {
-        // Send to Discord
-        try {
-          const channel = client.channels.cache.get(config.discord.channelId);
-          if (channel) {
-            // Split long lines
-            const chunks = line.match(/.{1,2000}/g) || [];
-            for (const chunk of chunks) {
-              const embed = new EmbedBuilder()
-                .setColor('#0099FF')
-                .setDescription(`\`\`\`${chunk}\`\`\``)
-                .setTimestamp();
-              await channel.send({ embeds: [embed] });
-            }
-            console.log('[SENT] Log line to Discord');
-          }
-        } catch (err) {
-          console.error('[ERROR] Failed to send log:', err.message);
-        }
-
-        // Rate limit
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-
-      // Update offset
-      logOffset = lines.length;
-      saveOffset();
+    const channel = client.channels.cache.get(config.discord.channelId);
+    if (!channel) {
+      console.error('[ERROR] Channel not found');
+      return;
     }
+
+    // Check for important events
+    let color = '#808080'; // Default gray
+    let title = '📝 Log';
+
+    if (line.includes('joined')) {
+      color = '#00FF00';
+      title = '🟢 Player Joined';
+    } else if (line.includes('left') || line.includes('disconnect')) {
+      color = '#FF6B6B';
+      title = '🔴 Player Left';
+    } else if (line.includes('Error') || line.includes('error')) {
+      color = '#FF0000';
+      title = '🔴 Error';
+    } else if (line.includes('Chat') || line.includes('chat')) {
+      color = '#9900FF';
+      title = '💬 Chat';
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(color)
+      .setTitle(title)
+      .setDescription(`\`\`\`${line.substring(0, 2000)}\`\`\``)
+      .setTimestamp();
+
+    await channel.send({ embeds: [embed] });
+    console.log('[SENT]', title);
   } catch (error) {
-    console.error('[ERROR] Log check failed:', error.message);
+    console.error('[ERROR] Send to Discord failed:', error.message);
   }
 }
 
@@ -104,33 +103,25 @@ async function checkLogs() {
 client.once('ready', () => {
   console.log(`[READY] Bot logged in as ${client.user.tag}`);
   isConnected = true;
-
-  if (!logCheckInterval) {
-    console.log(`[START] Log checking every ${config.logging.checkInterval}ms`);
-    logCheckInterval = setInterval(checkLogs, config.logging.checkInterval);
-  }
+  connectTelnet();
 });
 
 client.on('error', (error) => {
-  console.error('[ERROR]', error);
+  console.error('[CLIENT_ERROR]', error);
 });
 
-// Graceful shutdown
 process.on('SIGINT', () => {
   console.log('\n[SHUTDOWN] Shutting down...');
+  if (telnetConnection) telnetConnection.destroy();
   if (logCheckInterval) clearInterval(logCheckInterval);
-  saveOffset();
   client.destroy();
   process.exit(0);
 });
 
 // Start
-console.log('[INIT] Soulmask Discord Bot v3.0.0');
-console.log(`[CONFIG] Log File: ${config.logging.logFile}`);
-console.log(`[CONFIG] Check Interval: ${config.logging.checkInterval}ms`);
+console.log('[INIT] Soulmask Discord Bot v4.0.0 (Telnet)');
+console.log(`[CONFIG] Telnet: ${config.soulmask.serverIP}:${config.soulmask.telnetPort}`);
 console.log(`[CONFIG] Discord Channel: ${config.discord.channelId}`);
-
-loadOffset();
 
 client.login(config.discord.token).catch(err => {
   console.error('[FATAL] Login failed:', err.message);
