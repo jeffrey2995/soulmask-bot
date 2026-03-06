@@ -1,0 +1,18 @@
+{
+  "name": "soulmask-discord-bot",
+  "version": "3.0.0",
+  "description": "Soulmask Server Discord Bot - Logs Relay via Volume Mount",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo 'No tests yet'"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "author": "jeffrey2995",
+  "license": "MIT"
+}

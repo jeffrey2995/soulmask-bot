@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: soulmask-discord-bot
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - soulmask-logs:/logs:ro
+    restart: unless-stopped
+    
+volumes:
+  soulmask-logs:
+    external: true

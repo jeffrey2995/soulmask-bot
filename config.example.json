@@ -1,0 +1,10 @@
+{
+  "discord": {
+    "token": "YOUR_DISCORD_BOT_TOKEN_HERE",
+    "channelId": "YOUR_DISCORD_CHANNEL_ID_HERE"
+  },
+  "logging": {
+    "logFile": "/logs/WS.log",
+    "checkInterval": 5000
+  }
+}
